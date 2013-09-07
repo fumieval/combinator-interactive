@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell, PackageImports #-}
+{-# LANGUAGE TemplateHaskell, PackageImports, FlexibleInstances #-}
 import Prelude hiding (foldr)
 import Text.Trifecta
 import System.IO
@@ -12,6 +12,9 @@ import Data.Void
 import System.IO.Unsafe
 import System.IO.Error
 import Data.Monoid
+import qualified Data.ByteString.Lazy as BS
+import System.Directory
+import qualified Data.Serialize as S
 
 import "combinator-interactive" Data.Combinator
 
@@ -19,12 +22,14 @@ data Command = Eval (Expr String)
     | Run (Expr String)
     | Define String (Expr String)
     | Load FilePath String
+    | Save FilePath (Expr String)
+    | Del String
+    | Quit
 
 parseCommand :: Parser Command
-parseCommand = try define <|> run <|> load <|> eval where
+parseCommand = try define <|> run <|> load <|> del <|> quit <|> eval where
     run = do
         string ":run"
-        spaces
         Run <$> ccParser
     eval = do
         Eval <$> ccParser
@@ -37,6 +42,15 @@ parseCommand = try define <|> run <|> load <|> eval where
         path <- stringLiteral
         name <- option "main" $ variable
         return $ Load path name
+    save = do
+        string ":load"
+        path <- stringLiteral
+        expr <- ccParser
+        return $ Save path expr
+    del = do
+        string ":del"
+        Del <$> variable
+    quit = Quit <$ string ":quit"
     
 consE x xs = S :$ (S :$ I :$ (K :$ x)) :$ (K :$ xs)
 
@@ -78,23 +92,63 @@ prompt = do
             Eval expr -> do
                 m <- use definitions
                 lift $ putStrLn $ ccExpression # eval (applyDefs m expr)
+                prompt
             Run expr -> do
                 m <- use definitions
                 lift $ runLazy (fmap (\x -> error $ "Unexpected free variable: " ++ x) (applyDefs m expr))
                     `E.catch` \(E.ErrorCall msg) -> hPutStrLn stderr msg
                     `E.catch` \e -> hPutStrLn stderr (show (e :: E.IOException))
+                prompt
             Define name expr
-                | name `Data.Foldable.elem` expr -> lift $ hPutStrLn stderr "Recursive definitions are not allowed"
+                | name `Data.Foldable.elem` expr -> do
+                    lift $ hPutStrLn stderr "Recursive definitions are not allowed"
+                    prompt
                 | otherwise -> do
                     m <- use definitions
                     definitions . at name ?= applyDefs m expr
+                    dump
+                    prompt
             Load path name -> do
                 r <- parseFromFile ccParser path
                 case r of
                     Just expr -> do
                         definitions . at name ?= expr
+                        dump
                         lift $ putStrLn $ "Loaded: " ++ name ++ "."
-                    Nothing -> return ()
-        Failure doc -> lift $ hPutStrLn stderr $ show doc
+                        prompt
+                    Nothing -> prompt
+            Save path expr -> do
+                m <- use definitions
+                lift $ writeFile path $ ccExpression # eval (applyDefs m expr)
+                prompt
+            Del name -> do
+                definitions . at name .= Nothing
+                prompt
+            Quit -> return ()
+        Failure doc -> do
+            lift $ hPutStrLn stderr $ show doc
+            prompt
 
-main = evalStateT (forever prompt) (Env Map.empty)
+dump = do
+    path <- lift $ (++"/.lazyi-env") <$> getHomeDirectory
+    env <- get
+    lift $ BS.writeFile path $ S.encodeLazy env
+
+defaultEnv = Env Map.empty
+
+instance S.Serialize (Expr String) where
+    put expr = S.put (ccExpression # expr)
+    get = S.get >>= maybe (fail "parse error") return . preview ccExpression
+
+instance S.Serialize Env where
+    put (Env m) = S.put m
+    get = Env <$> S.get
+
+main = do
+    path <- (++"/.lazyi-env") <$> getHomeDirectory
+    b <- doesFileExist path
+    let w = hPutStrLn stderr "Warning: .lazyi-env is broken." >> return defaultEnv
+    env <- if b
+        then S.decodeLazy <$> BS.readFile path >>= either (const w) return
+        else return defaultEnv
+    evalStateT prompt env

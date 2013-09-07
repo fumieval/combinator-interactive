@@ -85,7 +85,7 @@ unlambdaParser = char '`' *> ((:$) <$> unlambdaParser <*> unlambdaParser)
     <|> Var <$> (char '[' *> some (satisfy (/=']')) <* char ']')
 
 ccParser :: Parser (Expr String)
-ccParser = foldl (:$) <$> term <*> many term where
+ccParser = token $ foldl (:$) <$> term <*> many term where
     term = token $ parens ccParser
         <|> S <$ char 'S'
         <|> K <$ char 'K'
