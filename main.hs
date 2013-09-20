@@ -10,11 +10,12 @@ import qualified Data.Map as Map
 import qualified Control.Exception as E
 import Data.Void
 import System.IO.Unsafe
-import System.IO.Error
+import System.IO.Error hiding (try)
 import Data.Monoid
-import qualified Data.ByteString.Lazy as BS
+import qualified Data.ByteString as BS
 import System.Directory
 import qualified Data.Serialize as S
+import System.Environment
 
 import "combinator-interactive" Data.Combinator
 
@@ -27,9 +28,9 @@ data Command = Eval (Expr String)
     | Quit
 
 parseCommand :: Parser Command
-parseCommand = try define <|> run <|> load <|> del <|> quit <|> eval where
+parseCommand = try define <|> run <|> load <|> save <|> del <|> quit <|> eval where
     run = do
-        string ":run"
+        symbol ":run"
         Run <$> ccParser
     eval = do
         Eval <$> ccParser
@@ -38,19 +39,19 @@ parseCommand = try define <|> run <|> load <|> del <|> quit <|> eval where
         symbol "="
         Define var <$> ccParser
     load = do
-        string ":load"
+        symbol ":load"
         path <- stringLiteral
         name <- option "main" $ variable
         return $ Load path name
     save = do
-        string ":load"
+        symbol ":save"
         path <- stringLiteral
         expr <- ccParser
         return $ Save path expr
     del = do
-        string ":del"
+        symbol ":del"
         Del <$> variable
-    quit = Quit <$ string ":quit"
+    quit = Quit <$ symbol ":quit"
     
 consE x xs = S :$ (S :$ I :$ (K :$ x)) :$ (K :$ xs)
 
@@ -132,7 +133,7 @@ prompt = do
 dump = do
     path <- lift $ (++"/.lazyi-env") <$> getHomeDirectory
     env <- get
-    lift $ BS.writeFile path $ S.encodeLazy env
+    lift $ BS.writeFile path $ S.encode env
 
 defaultEnv = Env Map.empty
 
@@ -144,11 +145,12 @@ instance S.Serialize Env where
     put (Env m) = S.put m
     get = Env <$> S.get
 
-main = do
-    path <- (++"/.lazyi-env") <$> getHomeDirectory
-    b <- doesFileExist path
-    let w = hPutStrLn stderr "Warning: .lazyi-env is broken." >> return defaultEnv
-    env <- if b
-        then S.decodeLazy <$> BS.readFile path >>= either (const w) return
-        else return defaultEnv
-    evalStateT prompt env
+main = getArgs >>= \r -> case r of
+    [] -> do
+        path <- (++"/.lazyi-env") <$> getHomeDirectory
+        b <- doesFileExist path
+        let w = hPutStrLn stderr "Warning: .lazyi-env is broken." >> return defaultEnv
+        env <- if b
+            then S.decode <$> BS.readFile path >>= either (const w) return
+            else return defaultEnv
+        evalStateT prompt env

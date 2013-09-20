@@ -2,7 +2,7 @@
 -- further documentation, see http://haskell.org/cabal/users-guide/
 
 name:                combinator-interactive
-version:             0.1
+version:             0.1.2
 synopsis:            SKI Combinator interpreter
 description:         
 homepage:            https://github.com/fumieval/combinator-interactive
